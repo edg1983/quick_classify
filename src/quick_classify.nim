@@ -111,6 +111,7 @@ proc main*() =
   query_data.read_data(opts.query, train_data.label_order)
 
   var
+    make_html = opts.make_html
     nPCs = parseInt(opts.n_pcs)
     nEpochs = parseInt(opts.nn_epochs)
     T = train_data.mtx.toTensor() #.transpose
@@ -119,7 +120,7 @@ proc main*() =
     t0 = cpuTime()
 
   var fh_html: File
-  if opts.make_html:
+  if make_html:
     if not fh_html.open(html_filename, fmWrite):
       log("ERROR", &"couldn't open output file: {html_filename}")
       quit QuitFailure
@@ -127,6 +128,10 @@ proc main*() =
   if nEpochs < 500:
     log("ERROR", &"nEpochs set to {nEpochs}. Must be >= 500")
     quit QuitFailure
+
+  if make_html and ((nPCs == 0 and T.shape[1] > 50) or nPCs > 50):
+    log("WARNING", &"Maximum allowed dimensions in the HTML is 50. You have {T.shape[1]} dimensions and requested {nPCs} PCs. HTML will not be generated.")
+    make_html = false
 
   var 
     t_proj: Tensor[float32]
@@ -282,13 +287,13 @@ proc main*() =
     for j in 0..<train_data.label_order.len:
       line.add(formatFloat(t_probs[i, j], ffDecimal, precision=4))
 
-    if opts.make_html:
+    if make_html:
       var lhtml = lhtmls.mgetOrPut(train_data.labels[i], ForHtml(group_label: train_data.labels[i], nDims: nDims, dims: newSeq[seq[float32]](nDims)))
       lhtml.text.add(&"sample:{s} label-probability: {t_probs[i, _].max}")
 
     for j in 0..<nPcs:
       line.add(formatFloat(t_proj[i, j], ffDecimal, precision=4))
-    if opts.make_html: lhtml.dims[j].add(t_proj[i, j])
+    if make_html: lhtml.dims[j].add(t_proj[i, j])
 
     train_preds_fh.write_line(join(line, "\t"))
 
@@ -302,20 +307,20 @@ proc main*() =
       line.add(formatFloat(q_probs[i, j], ffDecimal, precision=4))
 
     var qhtml: ForHtml
-    if opts.make_html:
+    if make_html:
       qhtml = qhtmls.mgetOrPut(group_label, ForHtml(group_label: group_label, nDims: nDims, dims: newSeq[seq[float32]](nDims)))
       qhtml.text.add(&"sample:{s} label-probability: {q_probs[i, _].max:.4f}")
 
     for j in 0..<nPcs:
       line.add(formatFloat(q_proj[i, j], ffDecimal, precision=4))
     
-    if opts.make_html: qhtml.dims[j].add(q_proj[i, j])
+    if make_html: qhtml.dims[j].add(q_proj[i, j])
     query_preds_fh.write_line(join(line, "\t"))
 
   query_preds_fh.close
   log("INFO", &"wrote query predictions to {query_preds_filename}")
 
-  if opts.make_html:
+  if make_html:
     var htmls = tmpl_html.split("<BACKGROUND_JSON>")
     fh_html.write(htmls[0])
     fh_html.write_line(%* lhtmls)
