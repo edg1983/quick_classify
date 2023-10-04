@@ -11,6 +11,7 @@ import sets
 import arraymancer
 import tables
 import zip/gzipfiles
+import nimhdf5
 
 const VERSION="0.1"
 
@@ -158,76 +159,92 @@ proc main*() =
 
     forward x:
       x.fc1.relu.classifier
+  
+  proc save_model(network: PredictionNet, h5df_file: string) =
+    var h5df = H5open(h5df_file, "rw")
+    h5df.write(fc1.weight.value, group="fc1", name="weight")
+    h5df.write(fc1.bias.value, group="fc1", name="bias")
+    h5df.write(classifier.weight.value, group="classifier", name="weight")
+    h5df.write(classifier.bias.value, group="classifier", name="bias")
+    h5df.close()
+
+  proc load_model(ctx: Context[Tensor[float32]], h5df_file: string): PredictionNet =
+    result.fc1.weight = ctx.variable(read_hdf5[float32](h5df_file, group="fc1", name="weight"), requires_grad = true)
+    result.fc1.bias   = ctx.variable(read_hdf5[float32](h5df_file, group="fc1", name="bias"), requires_grad = true)
+    result.classifier.weight = ctx.variable(read_hdf5[float32](h5df_file, group="classifier", name="weight"), requires_grad = true)
+    result.classifier.bias   = ctx.variable(read_hdf5[float32](h5df_file, group="classifier", name="bias"), requires_grad = true)
 
   let
     model = ctx.init(PredictionNet)
     optim = model.optimizer(SGD, learning_rate = 0.01'f32)
-  
-  var batch_size: int
 
-  if opts.nn_batch_size.contains('.'):
-    batch_size = (t_proj.shape[0].float * parseFloat(opts.nn_batch_size)).floor.int
+  if opts.model != "":
+    model = load_model(ctx, opts.model)
+    log("INFO", &"loaded model from {opts.model}")
   else:
-    batch_size = parseInt(opts.nn_batch_size)
+    var batch_size: int
 
-  log("INFO", fmt"batch_size for testing set to {batch_size}")
+    if opts.nn_batch_size.contains('.'):
+      batch_size = (t_proj.shape[0].float * parseFloat(opts.nn_batch_size)).floor.int
+    else:
+      batch_size = parseInt(opts.nn_batch_size)
 
-  t0 = cpuTime()
-  # range of data in first PC
-  var proj_range = t_proj[_, 0].max() -  t_proj[_, 0].min()
-  var rand_scale = proj_range / 5.0'f32
-  #echo "rand_scale:", rand_scale
+    log("INFO", fmt"batch_size for testing set to {batch_size}")
 
-  log("INFO", "Start model training")
-  # train the model
-  for epoch in 0..nEpochs:
+    t0 = cpuTime()
+    # range of data in first PC
+    var proj_range = t_proj[_, 0].max() -  t_proj[_, 0].min()
+    var rand_scale = proj_range / 5.0'f32
+    #echo "rand_scale:", rand_scale
 
-    # adds random-ness scaled inversely by proportion variance explained.
-    var r = randomTensor[float32](t_proj.shape[0], t_proj.shape[1], rand_scale) -. (rand_scale / 2'f32)
-    #r = r /. erv
-    #echo r.mean(axis=0)
-    var t_proj_r = t_proj +. r
-    #echo t_proj_r.mean(axis=0)
-    X = ctx.variable t_proj_r
+    log("INFO", "Start model training")
+    # train the model
+    for epoch in 0..nEpochs:
 
-    for batch_id in 0..<X.value.shape[0] div batch_size:
+      # adds random-ness scaled inversely by proportion variance explained.
+      var r = randomTensor[float32](t_proj.shape[0], t_proj.shape[1], rand_scale) -. (rand_scale / 2'f32)
+      #r = r /. erv
+      #echo r.mean(axis=0)
+      var t_proj_r = t_proj +. r
+      #echo t_proj_r.mean(axis=0)
+      X = ctx.variable t_proj_r
 
-      let offset = batch_id * batch_size
-      if offset > X.value.shape[0] - nn_test_samples:
-        break
+      for batch_id in 0..<X.value.shape[0] div batch_size:
 
-      let offset_stop = min(offset + batch_size,  X.value.shape[0] - nn_test_samples)
-      let x = X[offset ..< offset_stop, _]
-      let y = Y[offset ..< offset_stop]
+        let offset = batch_id * batch_size
+        if offset > X.value.shape[0] - nn_test_samples:
+          break
 
-      let
-        clf = model.forward(x)
-        loss = clf.sparse_softmax_cross_entropy(y)
+        let offset_stop = min(offset + batch_size,  X.value.shape[0] - nn_test_samples)
+        let x = X[offset ..< offset_stop, _]
+        let y = Y[offset ..< offset_stop]
 
-      loss.backprop()
-      optim.update()
-
-    if epoch mod 500 == 0:
-      ctx.no_grad_mode:
         let
-          clf = model.forward(X[X.value.shape[0] - nn_test_samples..<X.value.shape[0], _])
-          y_pred = clf.value.softmax.argmax(axis=1).squeeze
-          y = Y[X.value.shape[0] - nn_test_samples..<X.value.shape[0]]
-          loss = clf.sparse_softmax_cross_entropy(y).value.unsafe_raw_offset[0]
-          accuracy = accuracy_score(y_pred, y)
-      log("INFO", fmt"Epoch:{epoch}. loss: {loss:.5f}. accuracy on unseen data: {accuracy:.3f}.  total-time: {elapsed_time(t0)}")
-      if epoch >= 800 and ((loss < 0.005 and accuracy > 0.98) or (accuracy >= 0.995 and loss < 0.025)):
-        log("INFO", fmt"breaking with trained model at this accuracy and loss")
-        break
-  log("INFO", fmt"Finished training model. total-time: {elapsed_time(t0)}")
+          clf = model.forward(x)
+          loss = clf.sparse_softmax_cross_entropy(y)
 
-  # save the model
-  # if opts.save_model:
-  #   let model_file = &"{opts.output_prefix}model.npz"
-  #   var model_fh = newFileStream(model_file, fmWrite)
-  #   model_fh.write(model)
-  #   model_fh.flush
-  #   log("INFO", fmt"Model saved to {model_file}")
+        loss.backprop()
+        optim.update()
+
+      if epoch mod 500 == 0:
+        ctx.no_grad_mode:
+          let
+            clf = model.forward(X[X.value.shape[0] - nn_test_samples..<X.value.shape[0], _])
+            y_pred = clf.value.softmax.argmax(axis=1).squeeze
+            y = Y[X.value.shape[0] - nn_test_samples..<X.value.shape[0]]
+            loss = clf.sparse_softmax_cross_entropy(y).value.unsafe_raw_offset[0]
+            accuracy = accuracy_score(y_pred, y)
+        log("INFO", fmt"Epoch:{epoch}. loss: {loss:.5f}. accuracy on unseen data: {accuracy:.3f}.  total-time: {elapsed_time(t0)}")
+        if epoch >= 800 and ((loss < 0.005 and accuracy > 0.98) or (accuracy >= 0.995 and loss < 0.025)):
+          log("INFO", fmt"breaking with trained model at this accuracy and loss")
+          break
+    log("INFO", fmt"Finished training model. total-time: {elapsed_time(t0)}")
+
+    # save the model if requested
+    if opts.save_model:
+      let model_file = &"{opts.output_prefix}model.h5df"
+      model.save_model(model_file)
+      log("INFO", fmt"Model saved to {model_file}")
 
   ctx.no_grad_mode:
     let t_probs = model.forward(X).value.softmax #.argmax(axis=1).squeeze
