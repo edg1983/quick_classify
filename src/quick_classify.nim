@@ -25,8 +25,8 @@ type Data_matrix = object
 
 type ForHtml = ref object
   text*: seq[string]
-  nPCs*: int
-  pcs: seq[seq[float32]]
+  nDims*: int
+  dims: seq[seq[float32]]
   probs: seq[float32] # probability of maximum prediction
   group_label: string
 
@@ -131,12 +131,16 @@ proc main*() =
   var 
     t_proj: Tensor[float32]
     q_proj: Tensor[float32]
+    nDims: int
+
   if nPCs > 0:
+    nDims = nPCs
     var res = T.pca_detailed(n_components = nPCs)
     log("INFO", fmt"Reduced dataset to shape {res.projected.shape}: {elapsed_time(t0)}")
     t_proj = T * res.components
     q_proj = Q * res.components
   else:
+    nDims = T.shape[1]
     t_proj = T
     q_proj = Q
         
@@ -279,11 +283,13 @@ proc main*() =
       line.add(formatFloat(t_probs[i, j], ffDecimal, precision=4))
 
     if opts.make_html:
-      var lhtml = lhtmls.mgetOrPut(train_data.labels[i], ForHtml(group_label: train_data.labels[i], nPCs: nPCs, pcs: newSeq[seq[float32]](nPCs)))
+      var lhtml = lhtmls.mgetOrPut(train_data.labels[i], ForHtml(group_label: train_data.labels[i], nDims: nDims, dims: newSeq[seq[float32]](nDims)))
       lhtml.text.add(&"sample:{s} label-probability: {t_probs[i, _].max}")
 
     for j in 0..<nPcs:
       line.add(formatFloat(t_proj[i, j], ffDecimal, precision=4))
+    if opts.make_html: lhtml.dims[j].add(t_proj[i, j])
+
     train_preds_fh.write_line(join(line, "\t"))
 
   train_preds_fh.close
@@ -297,12 +303,13 @@ proc main*() =
 
     var qhtml: ForHtml
     if opts.make_html:
-      qhtml = qhtmls.mgetOrPut(group_label, ForHtml(group_label: group_label, nPCs: nPCs, pcs: newSeq[seq[float32]](nPCs)))
+      qhtml = qhtmls.mgetOrPut(group_label, ForHtml(group_label: group_label, nDims: nDims, dims: newSeq[seq[float32]](nDims)))
       qhtml.text.add(&"sample:{s} label-probability: {q_probs[i, _].max:.4f}")
 
     for j in 0..<nPcs:
       line.add(formatFloat(q_proj[i, j], ffDecimal, precision=4))
-      if opts.make_html: qhtml.pcs[j].add(q_proj[i, j])
+    
+    if opts.make_html: qhtml.dims[j].add(q_proj[i, j])
     query_preds_fh.write_line(join(line, "\t"))
 
   query_preds_fh.close
