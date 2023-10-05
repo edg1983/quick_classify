@@ -202,8 +202,7 @@ proc main*() =
 
     var model = ctx.init(PredictionNet)
 
-    proc save_model(network: PredictionNet[float32], nHidden: int, nOut: int, labels: Table[string, int]) =
-      let model_folder = opts.output_prefix & "model"
+    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int]) =
       var ordered_labels = newSeq[string](labels.len)
       for k, v in labels:
         ordered_labels[v] = k
@@ -271,12 +270,13 @@ proc main*() =
 
     # save the model if requested
     if opts.save_model:
-      let model_file = &"{opts.output_prefix}model.h5df"
-      save_model(model, nHidden, nOut, train_data.label_order)
-      log("INFO", fmt"Model saved to {model_file}")
+      let model_folder = opts.output_prefix & "model"
+      model.save_model(model_folder, nHidden, nOut, train_data.label_order)
 
     ctx.no_grad_mode:
       t_probs = model.forward(X).value.softmax #.argmax(axis=1).squeeze
+    
+    q_probs = model.forward(ctx.variable q_proj).value.softmax
 
   else:
     proc load_model(ctx: Context[Tensor[float32]], model_folder: string): PredictionNet[float32] =
@@ -288,7 +288,6 @@ proc main*() =
 
     var model = load_model(ctx, opts.model)
     q_probs = model.forward(ctx.variable q_proj).value.softmax
-  
   
   var header = @["#sample_id", "predicted_label", "given_label"]
   # Load ordered labels from the JSON
@@ -319,7 +318,7 @@ proc main*() =
     for i, s in train_data.sids:
       # The order here is sampleID, predicted_label, given_label
       var line = @[s, inv_orders[t_pred[i]], train_data.labels[i]]
-      for j in 0..<train_data.label_order.len:
+      for j in 0..<labels.len:
         line.add(formatFloat(t_probs[i, j], ffDecimal, precision=4))
 
       if make_html:
@@ -339,7 +338,7 @@ proc main*() =
   for i, s in query_data.sids:
     let group_label = inv_orders[q_pred[i]]
     var line = @[s, inv_orders[q_pred[i]], ""]
-    for j in 0..<train_data.label_order.len:
+    for j in 0..<labels.len:
       line.add(formatFloat(q_probs[i, j], ffDecimal, precision=4))
 
     var qhtml: ForHtml
