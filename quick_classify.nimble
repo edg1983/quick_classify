@@ -10,4 +10,4 @@ bin           = @["quick_classify"]
 
 # Dependencies
 
-requires "nim >= 1.6.4", "argparse >= 3.0.0", "arraymancer == 0.7.15", "nimhdf5 == 0.5.10"
+requires "nim >= 1.6.4", "argparse >= 3.0.0", "arraymancer == 0.7.15"

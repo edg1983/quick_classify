@@ -11,9 +11,9 @@ import sets
 import arraymancer
 import tables
 import zip/gzipfiles
-import nimhdf5
+import os
 
-const VERSION="0.1"
+const VERSION="0.2"
 
 const tmpl_html = staticRead("quickclass/template.html")
 
@@ -169,28 +169,32 @@ proc main*() =
     forward x:
       x.fc1.relu.classifier
   
-  proc save_model(network: PredictionNet, h5df_file: string) =
-    var h5df = H5open(h5df_file, "rw")
-    h5df.write(fc1.weight.value, group="fc1", name="weight")
-    h5df.write(fc1.bias.value, group="fc1", name="bias")
-    h5df.write(classifier.weight.value, group="classifier", name="weight")
-    h5df.write(classifier.bias.value, group="classifier", name="bias")
-    h5df.close()
+  var model = ctx.init(PredictionNet)
 
-  proc load_model(ctx: Context[Tensor[float32]], h5df_file: string): PredictionNet =
-    result.fc1.weight = ctx.variable(read_hdf5[float32](h5df_file, group="fc1", name="weight"), requires_grad = true)
-    result.fc1.bias   = ctx.variable(read_hdf5[float32](h5df_file, group="fc1", name="bias"), requires_grad = true)
-    result.classifier.weight = ctx.variable(read_hdf5[float32](h5df_file, group="classifier", name="weight"), requires_grad = true)
-    result.classifier.bias   = ctx.variable(read_hdf5[float32](h5df_file, group="classifier", name="bias"), requires_grad = true)
+  proc save_model(network: PredictionNet[float32]) =
+    let model_folder = opts.output_prefix & "model"
+    createDir(model_folder)
+    network.fc1.weight.value.write_npy(&"{model_folder}/fc1.weight.npy")
+    network.fc1.bias.value.write_npy(&"{model_folder}/fc1.bias.npy")
+    network.classifier.weight.value.write_npy(&"{model_folder}/classifier.weight.npy")
+    network.classifier.bias.value.write_npy(&"{model_folder}/classifier.bias.npy")
+    log("INFO", &"saved model to {model_folder}")
 
-  let
-    model = ctx.init(PredictionNet)
-    optim = model.optimizer(SGD, learning_rate = 0.01'f32)
+  proc load_model(ctx: Context[Tensor[float32]], model_folder: string): PredictionNet[float32] =
+    for f in @["/fc1.weight.npy", "/fc1.bias.npy", "/classifier.weight.npy", "/classifier.bias.npy"]:
+      if not fileExists(model_folder & f):
+        log("ERROR", &"Unable to load model data: file {model_folder & f} does not exist")
+        quit QuitFailure
+    result.fc1.weight = ctx.variable(read_npy[float32](&"{model_folder}/fc1.weight.npy"), requires_grad = true)
+    result.fc1.bias   = ctx.variable(read_npy[float32](&"{model_folder}/fc1.bias.npy"), requires_grad = true)
+    result.classifier.weight = ctx.variable(read_npy[float32](&"{model_folder}/classifier.weight.npy"), requires_grad = true)
+    result.classifier.bias   = ctx.variable(read_npy[float32](&"{model_folder}/classifier.bias.npy"), requires_grad = true)
+    log("INFO", &"loaded model from {model_folder}")
 
   if opts.model != "":
     model = load_model(ctx, opts.model)
-    log("INFO", &"loaded model from {opts.model}")
   else:
+    let optim = model.optimizer(SGD, learning_rate = 0.01'f32)
     var batch_size: int
 
     if opts.nn_batch_size.contains('.'):
@@ -252,7 +256,7 @@ proc main*() =
     # save the model if requested
     if opts.save_model:
       let model_file = &"{opts.output_prefix}model.h5df"
-      model.save_model(model_file)
+      save_model(model)
       log("INFO", fmt"Model saved to {model_file}")
 
   ctx.no_grad_mode:
@@ -290,10 +294,10 @@ proc main*() =
     if make_html:
       var lhtml = lhtmls.mgetOrPut(train_data.labels[i], ForHtml(group_label: train_data.labels[i], nDims: nDims, dims: newSeq[seq[float32]](nDims)))
       lhtml.text.add(&"sample:{s} label-probability: {t_probs[i, _].max}")
+      for j in 0..<nDims: lhtml.dims[j].add(t_proj[i, j])
 
     for j in 0..<nPcs:
       line.add(formatFloat(t_proj[i, j], ffDecimal, precision=4))
-    if make_html: lhtml.dims[j].add(t_proj[i, j])
 
     train_preds_fh.write_line(join(line, "\t"))
 
@@ -310,11 +314,11 @@ proc main*() =
     if make_html:
       qhtml = qhtmls.mgetOrPut(group_label, ForHtml(group_label: group_label, nDims: nDims, dims: newSeq[seq[float32]](nDims)))
       qhtml.text.add(&"sample:{s} label-probability: {q_probs[i, _].max:.4f}")
+      for j in 0..<nDims: qhtml.dims[j].add(q_proj[i, j])
 
     for j in 0..<nPcs:
       line.add(formatFloat(q_proj[i, j], ffDecimal, precision=4))
     
-    if make_html: qhtml.dims[j].add(q_proj[i, j])
     query_preds_fh.write_line(join(line, "\t"))
 
   query_preds_fh.close
