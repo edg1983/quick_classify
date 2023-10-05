@@ -198,6 +198,7 @@ proc main*() =
       log("INFO", fmt"Reduced dataset to shape {res.projected.shape}: {elapsed_time(t0)}")
       t_proj = T * res.components
       q_proj = Q * res.components
+      #If we are saving the model, save the PC components as well
       if opts.save_model:
         res.components.write_npy(&"{opts.output_prefix}model/pc_components.npy")
     else:
@@ -304,6 +305,8 @@ proc main*() =
       log("INFO", &"loaded model from {model_folder}")
 
     var model = load_model(ctx, opts.model)
+
+    #If the original model was trained with PCA, we need to project the query data on the same PCs
     let nPCs_in_saved_model = model_json["nPCs"].getInt
     if nPCs_in_saved_model > 0:
       log("INFO", &"performing PCA on query data projecting on {nPCs_in_saved_model} PCs from the saved model")
@@ -311,6 +314,8 @@ proc main*() =
       q_proj = Q * pc_components
     else:
       q_proj = Q
+
+    # store the predictions for query data
     q_probs = model.forward(ctx.variable q_proj).value.softmax
   
   var header = @["#sample_id", "predicted_label", "given_label"]
