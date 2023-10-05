@@ -128,7 +128,7 @@ proc main*() =
     if not fh_html.open(html_filename, fmWrite):
       log("ERROR", &"couldn't open output file: {html_filename}")
       quit QuitFailure
-      
+
   if perform_training:
     if not open(train_preds_fh, train_preds_filename, fmWrite):
       log("ERROR", &"couldn't open output file {train_preds_filename}")
@@ -136,6 +136,10 @@ proc main*() =
     train_data.read_data(opts.train)
     nOut = train_data.sids.len
   else:
+    for f in @["/fc1.weight.npy", "/fc1.bias.npy", "/classifier.weight.npy", "/classifier.bias.npy", "/model.json"]:
+      if not fileExists(opts.model & f):
+        log("ERROR", &"Unable to load model data: file {opts.model & f} does not exist")
+        quit QuitFailure
     model_json = parseFile(opts.model & "/model.json")
     nOut = model_json["nOut"].getInt
     nHidden = model_json["nHidden"].getInt
@@ -276,10 +280,6 @@ proc main*() =
 
   else:
     proc load_model(ctx: Context[Tensor[float32]], model_folder: string): PredictionNet[float32] =
-      for f in @["/fc1.weight.npy", "/fc1.bias.npy", "/classifier.weight.npy", "/classifier.bias.npy"]:
-        if not fileExists(model_folder & f):
-          log("ERROR", &"Unable to load model data: file {model_folder & f} does not exist")
-          quit QuitFailure
       result.fc1.weight = ctx.variable(read_npy[float32](&"{model_folder}/fc1.weight.npy"), requires_grad = true)
       result.fc1.bias   = ctx.variable(read_npy[float32](&"{model_folder}/fc1.bias.npy"), requires_grad = true)
       result.classifier.weight = ctx.variable(read_npy[float32](&"{model_folder}/classifier.weight.npy"), requires_grad = true)
