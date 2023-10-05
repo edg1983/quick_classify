@@ -82,6 +82,7 @@ proc main*() =
 
   echo(&"QUICK CLASSIFY VERSION {VERSION}")
 
+  ### Parse command line arguments ###
   var opts = parseCmdLine()
   opts.logArgs()
 
@@ -118,17 +119,21 @@ proc main*() =
     query_preds_filename = opts.output_prefix & "predictions-query.tsv"
     html_filename = opts.output_prefix & "predictions.html"
   
+  #Read the query data
   if not open(query_preds_fh, query_preds_filename, fmWrite):
     log("ERROR", &"couldn't open output file {query_preds_filename}")
     quit QuitFailure
   query_data.read_data(opts.query, train_data.label_order)
 
+  #Check if we can create HTML when needed
   var fh_html: File
   if make_html:
     if not fh_html.open(html_filename, fmWrite):
       log("ERROR", &"couldn't open output file: {html_filename}")
       quit QuitFailure
 
+  #If we are performing training, read the training data
+  #Otherwise, get model config from JSON
   if perform_training:
     if not open(train_preds_fh, train_preds_filename, fmWrite):
       log("ERROR", &"couldn't open output file {train_preds_filename}")
@@ -144,17 +149,23 @@ proc main*() =
     nOut = model_json["nOut"].getInt
     nHidden = model_json["nHidden"].getInt
 
+  #Convert query matrix to tensor
   var Q = query_data.mtx.toTensor() #.transpose
   
+  #Now get the features dimension
+  #This is equal to the number of PCs if specified, otherwise number of features in the query data
+  #We assume train and query data have the same features
   if nPCs > 0:
     nDims = nPCs
   else:
     nDims = Q.shape[1]
 
+  #We turn off HTML report when N features is too large
   if make_html and (nDims > 50):
     log("WARNING", &"Maximum allowed features in the HTML is 50. You have {nDims} features (input or PCs). HTML will not be generated.")
     make_html = false
 
+  ### PREPARE THE MODEL ###
   let
     ctx = newContext Tensor[float32]
   var
@@ -171,6 +182,7 @@ proc main*() =
       x.fc1.relu.classifier
 
   if perform_training:
+    ### PERFORM MODEL TRAINING ###
     var
       T = train_data.mtx.toTensor() #.transpose
       Y = train_data.get_labels_as_int.toTensor()
@@ -180,6 +192,7 @@ proc main*() =
       log("ERROR", &"nEpochs set to {nEpochs}. Must be >= 500")
       quit QuitFailure
 
+    #PC dimensionality reduction if configured
     if nPCs > 0:
       var res = T.pca_detailed(n_components = nPCs)
       log("INFO", fmt"Reduced dataset to shape {res.projected.shape}: {elapsed_time(t0)}")
@@ -202,6 +215,7 @@ proc main*() =
 
     var model = ctx.init(PredictionNet)
 
+    #Function to save the model to disk
     proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int]) =
       var ordered_labels = newSeq[string](labels.len)
       for k, v in labels:
@@ -220,13 +234,12 @@ proc main*() =
     let optim = model.optimizer(SGD, learning_rate = 0.01'f32)
 
     t0 = cpuTime()
-    # range of data in first PC
+    # range of data
     var proj_range = t_proj[_, 0].max() -  t_proj[_, 0].min()
     var rand_scale = proj_range / 5.0'f32
-    #echo "rand_scale:", rand_scale
 
+    #Actual model training loop
     log("INFO", "Start model training")
-    # train the model
     for epoch in 0..nEpochs:
 
       # adds random-ness scaled inversely by proportion variance explained.
@@ -273,12 +286,14 @@ proc main*() =
       let model_folder = opts.output_prefix & "model"
       model.save_model(model_folder, nHidden, nOut, train_data.label_order)
 
+    # store the predictions
     ctx.no_grad_mode:
       t_probs = model.forward(X).value.softmax #.argmax(axis=1).squeeze
     
     q_probs = model.forward(ctx.variable q_proj).value.softmax
 
   else:
+    ### LOAD A PRE-TRAINED MODEL ###
     proc load_model(ctx: Context[Tensor[float32]], model_folder: string): PredictionNet[float32] =
       result.fc1.weight = ctx.variable(read_npy[float32](&"{model_folder}/fc1.weight.npy"), requires_grad = true)
       result.fc1.bias   = ctx.variable(read_npy[float32](&"{model_folder}/fc1.bias.npy"), requires_grad = true)
@@ -300,7 +315,9 @@ proc main*() =
       labels[l.getStr] = i
       i += 1
   
+  ### CREATE THE OUTPUT FILES ###
   # maintain order of labels
+  # labels are converted to int for predictions so we need to map back
   var inv_orders = newSeq[string](labels.len)
   header.setLen(header.len + labels.len)
   for k, v in labels:
@@ -309,9 +326,11 @@ proc main*() =
   for ip in 0..<nPCs:
     header.add("PC" & $(ip + 1))
 
+  # Initi tables for HTML
   var lhtmls = initTable[string, ForHtml]()
   var qhtmls = initTable[string, ForHtml]()
 
+  # Save prediction results on training if we are not using a pre-trained model
   if perform_training:
     train_preds_fh.write_line(join(header, "\t"))
     let t_pred = t_probs.argmax(axis=1).squeeze
@@ -334,6 +353,7 @@ proc main*() =
     train_preds_fh.close
     log("INFO", &"wrote train predictions to {train_preds_filename}")
 
+  # Save prediction results on query data
   let q_pred = q_probs.argmax(axis=1).squeeze
   for i, s in query_data.sids:
     let group_label = inv_orders[q_pred[i]]
@@ -355,6 +375,7 @@ proc main*() =
   query_preds_fh.close
   log("INFO", &"wrote query predictions to {query_preds_filename}")
 
+  # Write HTML if requested
   if make_html:
     var htmls = tmpl_html.split("<BACKGROUND_JSON>")
     fh_html.write(htmls[0])
