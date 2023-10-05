@@ -42,17 +42,26 @@ When `--n_pcs` is set to zero (default) the tool will use the input data directl
 
 ## Output files
 
-Based on the configure output_prefix the tool generates:
+Based on the configured output_prefix the tool generates:
 
 - `<output_prefix>.predictions-train.tsv` containing the predictions for the training dataset
 - `<output_prefix>.predictions-query.tsv` containing the predictions for the query dataset
 
 Both files contains the sample id, the given label, the predicted label and the probability estimstes for each label.
 
-When `--make_html` is set the tool also generates a HTML report `<output_prefix>.predictions.html` containing:
+When `--make_html` is set the tool also generates a HTML report `<output_prefix>.predictions.html` containing
+
+When `--save_model` is set the tool also generates a folder `<output_prefix>.model` containing data of the trained model and eventually the PC loadings.
+
+## Re-use trained models
+
+If you have a model folder containing model data from a previou run, you can use `--model <model_folder>` to load the model and use it for prediction. In this case, the tool will ignore all other parameters and use the model as is.
+
+**NB.** In this case the query dataset must contain the same features (columns) as the training dataset in the same order. The features used in training are stored in the model folder in model.json.
+
+If the training process involved PC dimensionality reduction, the query dataset will be automatically projected in the same PC space before prediction.
 
 ## Future improvements
 
-- [ ] be able to save trained models and use them to predict new data without retraining the model.
 - [ ] allow to subset columns in input files using column names or index
 - [ ] when both train and test are given automatically subset to common columns

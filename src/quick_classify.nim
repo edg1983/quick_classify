@@ -18,6 +18,7 @@ const VERSION="0.2"
 const tmpl_html = staticRead("quickclass/template.html")
 
 type Data_matrix = object
+  features*: seq[string]
   labels*: seq[string]
   label_order*: Table[string, int]
   sids*: seq[string]
@@ -40,7 +41,7 @@ proc read_data(d: var Data_matrix, filename: string, label_order: Table[string, 
   let fs = (if filename.endsWith(".gz"): newGzFileStream(filename) else: newFileStream(filename))
 
   let header = fs.readLine().strip(chars = {' ', '\n', '#'}).split("\t")
-
+  d.features = header[2..header.high]
   log("INFO", fmt"header: {header}")
 
   let sample_label_idx = header.find("label")
@@ -219,7 +220,7 @@ proc main*() =
     var model = ctx.init(PredictionNet)
 
     #Function to save the model to disk
-    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int], nPCs: int) =
+    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int], features: seq[string], nPCs: int) =
       var ordered_labels = newSeq[string](labels.len)
       for k, v in labels:
         ordered_labels[v] = k
@@ -228,7 +229,7 @@ proc main*() =
       network.fc1.bias.value.write_npy(&"{model_folder}/fc1.bias.npy")
       network.classifier.weight.value.write_npy(&"{model_folder}/classifier.weight.npy")
       network.classifier.bias.value.write_npy(&"{model_folder}/classifier.bias.npy")
-      var model_json = %* {"nHidden": nHidden, "nOut": nOut, "labels": ordered_labels, "nPCs": nPCs}
+      var model_json = %* {"nHidden": nHidden, "nOut": nOut, "labels": ordered_labels, "nPCs": nPCs, "features": features}
       var json_fh = open(&"{model_folder}/model.json", fmWrite)
       json_fh.write(model_json.pretty)
       json_fh.close()
@@ -287,7 +288,7 @@ proc main*() =
     # save the model if requested
     if opts.save_model:
       let model_folder = opts.output_prefix & "model"
-      model.save_model(model_folder, nHidden, nOut, train_data.label_order, nPCs)
+      model.save_model(model_folder, nHidden, nOut, train_data.label_order, train_data.features, nPCs)
 
     # store the predictions
     ctx.no_grad_mode:
@@ -369,6 +370,7 @@ proc main*() =
 
   # Save prediction results on query data
   let q_pred = q_probs.argmax(axis=1).squeeze
+  query_preds_fh.write_line(join(header, "\t"))
   for i, s in query_data.sids:
     let group_label = inv_orders[q_pred[i]]
     var line = @[s, inv_orders[q_pred[i]], ""]
