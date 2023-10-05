@@ -218,7 +218,7 @@ proc main*() =
     var model = ctx.init(PredictionNet)
 
     #Function to save the model to disk
-    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int], nPCs: int, pc_res: PCA_Detailed) =
+    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int], nPCs: int) =
       var ordered_labels = newSeq[string](labels.len)
       for k, v in labels:
         ordered_labels[v] = k
@@ -286,7 +286,7 @@ proc main*() =
     # save the model if requested
     if opts.save_model:
       let model_folder = opts.output_prefix & "model"
-      model.save_model(model_folder, nHidden, nOut, train_data.label_order, nPCs, res)
+      model.save_model(model_folder, nHidden, nOut, train_data.label_order, nPCs)
 
     # store the predictions
     ctx.no_grad_mode:
