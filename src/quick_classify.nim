@@ -198,6 +198,8 @@ proc main*() =
       log("INFO", fmt"Reduced dataset to shape {res.projected.shape}: {elapsed_time(t0)}")
       t_proj = T * res.components
       q_proj = Q * res.components
+      if opts.save_model:
+        res.components.write_npy(&"{opts.output_prefix}model/pc_components.npy")
     else:
       t_proj = T
       q_proj = Q
@@ -216,7 +218,7 @@ proc main*() =
     var model = ctx.init(PredictionNet)
 
     #Function to save the model to disk
-    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int]) =
+    proc save_model(network: PredictionNet[float32], model_folder: string, nHidden: int, nOut: int, labels: Table[string, int], nPCs: int, pc_res: PCA_Detailed) =
       var ordered_labels = newSeq[string](labels.len)
       for k, v in labels:
         ordered_labels[v] = k
@@ -225,7 +227,7 @@ proc main*() =
       network.fc1.bias.value.write_npy(&"{model_folder}/fc1.bias.npy")
       network.classifier.weight.value.write_npy(&"{model_folder}/classifier.weight.npy")
       network.classifier.bias.value.write_npy(&"{model_folder}/classifier.bias.npy")
-      var model_json = %* {"nHidden": nHidden, "nOut": nOut, "labels": ordered_labels}
+      var model_json = %* {"nHidden": nHidden, "nOut": nOut, "labels": ordered_labels, "nPCs": nPCs}
       var json_fh = open(&"{model_folder}/model.json", fmWrite)
       json_fh.write(model_json.pretty)
       json_fh.close()
@@ -284,7 +286,7 @@ proc main*() =
     # save the model if requested
     if opts.save_model:
       let model_folder = opts.output_prefix & "model"
-      model.save_model(model_folder, nHidden, nOut, train_data.label_order)
+      model.save_model(model_folder, nHidden, nOut, train_data.label_order, nPCs, res)
 
     # store the predictions
     ctx.no_grad_mode:
@@ -302,6 +304,13 @@ proc main*() =
       log("INFO", &"loaded model from {model_folder}")
 
     var model = load_model(ctx, opts.model)
+    let nPCs_in_saved_model = model_json["nPCs"].getInt
+    if nPCs_in_saved_model > 0:
+      log("INFO", &"performing PCA on query data projecting on {nPCs_in_saved_model} PCs from the saved model")
+      let pc_components = read_npy[float32](&"{opts.model}/pc_components.npy")
+      q_proj = Q * pc_components
+    else:
+      q_proj = Q
     q_probs = model.forward(ctx.variable q_proj).value.softmax
   
   var header = @["#sample_id", "predicted_label", "given_label"]
