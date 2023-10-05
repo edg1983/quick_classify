@@ -153,7 +153,14 @@ proc main*() =
     ctx = newContext Tensor[float32]
     nHidden = parseInt(opts.nn_hidden_size)
     nOut = train_data.sids.len
+    batch_size = parseInt(opts.nn_batch_size)
+  
+  var nn_test_samples: int    
+  if opts.nn_test_samples.contains('.'):
+    nn_test_samples = (t_proj.shape[0].float * parseFloat(opts.nn_test_samples)).floor.int
+  else:
     nn_test_samples = parseInt(opts.nn_test_samples)
+  log("INFO", fmt"N samples for test convergence set to {nn_test_samples}")
   
   var
     X = ctx.variable t_proj
@@ -195,14 +202,6 @@ proc main*() =
     model = load_model(ctx, opts.model)
   else:
     let optim = model.optimizer(SGD, learning_rate = 0.01'f32)
-    var batch_size: int
-
-    if opts.nn_batch_size.contains('.'):
-      batch_size = (t_proj.shape[0].float * parseFloat(opts.nn_batch_size)).floor.int
-    else:
-      batch_size = parseInt(opts.nn_batch_size)
-
-    log("INFO", fmt"batch_size for testing set to {batch_size}")
 
     t0 = cpuTime()
     # range of data in first PC
