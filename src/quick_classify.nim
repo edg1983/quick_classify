@@ -90,117 +90,130 @@ proc main*() =
   if not opts.output_prefix.endswith("."):
     opts.output_prefix &= "."
 
-  var train_preds_fh: File
-  var query_preds_fh: File
+  var 
+    make_html = opts.make_html
+    nHidden = parseInt(opts.nn_hidden_size)
+    nn_test_samples: int
+    model_json: JsonNode
+  let
+    nPCs = parseInt(opts.n_pcs)
+    nEpochs = parseInt(opts.nn_epochs)
+    batch_size = parseInt(opts.nn_batch_size)
+
+  var perform_training = true
+  if opts.model != "": perform_training = false
+
+  var 
+    train_preds_fh: File
+    query_preds_fh: File 
+    train_data: Data_matrix
+    query_data: Data_matrix
+    t_proj: Tensor[float32]
+    q_proj: Tensor[float32]
+    nDims: int
+    nOut: int
+  
   let
     train_preds_filename = opts.output_prefix & "predictions-train.tsv"
     query_preds_filename = opts.output_prefix & "predictions-query.tsv"
     html_filename = opts.output_prefix & "predictions.html"
-  if not open(train_preds_fh, train_preds_filename, fmWrite):
-    log("ERROR", &"couldn't open output file {train_preds_filename}")
-    quit QuitFailure
+  
   if not open(query_preds_fh, query_preds_filename, fmWrite):
     log("ERROR", &"couldn't open output file {query_preds_filename}")
     quit QuitFailure
-
-  var 
-    train_data: Data_matrix
-    query_data: Data_matrix
-
-  train_data.read_data(opts.train)
   query_data.read_data(opts.query, train_data.label_order)
-
-  var
-    make_html = opts.make_html
-    nPCs = parseInt(opts.n_pcs)
-    nEpochs = parseInt(opts.nn_epochs)
-    T = train_data.mtx.toTensor() #.transpose
-    Q = query_data.mtx.toTensor() #.transpose
-    Y = train_data.get_labels_as_int.toTensor()
-    t0 = cpuTime()
 
   var fh_html: File
   if make_html:
     if not fh_html.open(html_filename, fmWrite):
       log("ERROR", &"couldn't open output file: {html_filename}")
       quit QuitFailure
+      
+  if perform_training:
+    if not open(train_preds_fh, train_preds_filename, fmWrite):
+      log("ERROR", &"couldn't open output file {train_preds_filename}")
+      quit QuitFailure
+    train_data.read_data(opts.train)
+    nOut = train_data.sids.len
+  else:
+    model_json = parseFile(opts.model & "/model.json")
+    nOut = model_json["nOut"].getInt
+    nHidden = model_json["nHidden"].getInt
 
-  if nEpochs < 500:
-    log("ERROR", &"nEpochs set to {nEpochs}. Must be >= 500")
-    quit QuitFailure
-
-  if make_html and ((nPCs == 0 and T.shape[1] > 50) or nPCs > 50):
-    log("WARNING", &"Maximum allowed dimensions in the HTML is 50. You have {T.shape[1]} dimensions and requested {nPCs} PCs. HTML will not be generated.")
-    make_html = false
-
-  var 
-    t_proj: Tensor[float32]
-    q_proj: Tensor[float32]
-    nDims: int
-
+  var Q = query_data.mtx.toTensor() #.transpose
+  
   if nPCs > 0:
     nDims = nPCs
-    var res = T.pca_detailed(n_components = nPCs)
-    log("INFO", fmt"Reduced dataset to shape {res.projected.shape}: {elapsed_time(t0)}")
-    t_proj = T * res.components
-    q_proj = Q * res.components
   else:
-    nDims = T.shape[1]
-    t_proj = T
-    q_proj = Q
-        
+    nDims = Q.shape[1]
+
+  if make_html and (nDims > 50):
+    log("WARNING", &"Maximum allowed features in the HTML is 50. You have {nDims} features (input or PCs). HTML will not be generated.")
+    make_html = false
+
   let
     ctx = newContext Tensor[float32]
-    nHidden = parseInt(opts.nn_hidden_size)
-    nOut = train_data.sids.len
-    batch_size = parseInt(opts.nn_batch_size)
-  
-  var nn_test_samples: int    
-  if opts.nn_test_samples.contains('.'):
-    nn_test_samples = (t_proj.shape[0].float * parseFloat(opts.nn_test_samples)).floor.int
-  else:
-    nn_test_samples = parseInt(opts.nn_test_samples)
-  log("INFO", fmt"N samples for test convergence set to {nn_test_samples}")
-  
   var
-    X = ctx.variable t_proj
-
-  log("INFO", &"training data shape: {X.value.shape}")
+    t_probs: Tensor[float32]
+    q_probs: Tensor[float32]
 
   network PredictionNet:
     layers:
       #x: Input([1, t_proj.shape[1]])
-      fc1: Linear(t_proj.shape[1], nHidden)
+      fc1: Linear(nDims, nHidden)
       classifier: Linear(nHidden, nOut)
 
     forward x:
       x.fc1.relu.classifier
+
+  if perform_training:
+    var
+      T = train_data.mtx.toTensor() #.transpose
+      Y = train_data.get_labels_as_int.toTensor()
+      t0 = cpuTime()
+
+    if nEpochs < 500:
+      log("ERROR", &"nEpochs set to {nEpochs}. Must be >= 500")
+      quit QuitFailure
+
+    if nPCs > 0:
+      var res = T.pca_detailed(n_components = nPCs)
+      log("INFO", fmt"Reduced dataset to shape {res.projected.shape}: {elapsed_time(t0)}")
+      t_proj = T * res.components
+      q_proj = Q * res.components
+    else:
+      t_proj = T
+      q_proj = Q
+              
+    if opts.nn_test_samples.contains('.'):
+      nn_test_samples = (t_proj.shape[0].float * parseFloat(opts.nn_test_samples)).floor.int
+    else:
+      nn_test_samples = parseInt(opts.nn_test_samples)
+    log("INFO", fmt"N samples for test convergence set to {nn_test_samples}")
+    
+    var
+      X = ctx.variable t_proj
+
+    log("INFO", &"training data shape: {X.value.shape}")
+
+    var model = ctx.init(PredictionNet)
+
+    proc save_model(network: PredictionNet[float32], nHidden: int, nOut: int, labels: Table[string, int]) =
+      let model_folder = opts.output_prefix & "model"
+      var ordered_labels = newSeq[string](labels.len)
+      for k, v in labels:
+        ordered_labels[v] = k
+      createDir(model_folder)
+      network.fc1.weight.value.write_npy(&"{model_folder}/fc1.weight.npy")
+      network.fc1.bias.value.write_npy(&"{model_folder}/fc1.bias.npy")
+      network.classifier.weight.value.write_npy(&"{model_folder}/classifier.weight.npy")
+      network.classifier.bias.value.write_npy(&"{model_folder}/classifier.bias.npy")
+      var model_json = %* {"nHidden": nHidden, "nOut": nOut, "labels": ordered_labels}
+      var json_fh = open(&"{model_folder}/model.json", fmWrite)
+      json_fh.write(model_json.pretty)
+      json_fh.close()
+      log("INFO", &"saved model to {model_folder}")
   
-  var model = ctx.init(PredictionNet)
-
-  proc save_model(network: PredictionNet[float32]) =
-    let model_folder = opts.output_prefix & "model"
-    createDir(model_folder)
-    network.fc1.weight.value.write_npy(&"{model_folder}/fc1.weight.npy")
-    network.fc1.bias.value.write_npy(&"{model_folder}/fc1.bias.npy")
-    network.classifier.weight.value.write_npy(&"{model_folder}/classifier.weight.npy")
-    network.classifier.bias.value.write_npy(&"{model_folder}/classifier.bias.npy")
-    log("INFO", &"saved model to {model_folder}")
-
-  proc load_model(ctx: Context[Tensor[float32]], model_folder: string): PredictionNet[float32] =
-    for f in @["/fc1.weight.npy", "/fc1.bias.npy", "/classifier.weight.npy", "/classifier.bias.npy"]:
-      if not fileExists(model_folder & f):
-        log("ERROR", &"Unable to load model data: file {model_folder & f} does not exist")
-        quit QuitFailure
-    result.fc1.weight = ctx.variable(read_npy[float32](&"{model_folder}/fc1.weight.npy"), requires_grad = true)
-    result.fc1.bias   = ctx.variable(read_npy[float32](&"{model_folder}/fc1.bias.npy"), requires_grad = true)
-    result.classifier.weight = ctx.variable(read_npy[float32](&"{model_folder}/classifier.weight.npy"), requires_grad = true)
-    result.classifier.bias   = ctx.variable(read_npy[float32](&"{model_folder}/classifier.bias.npy"), requires_grad = true)
-    log("INFO", &"loaded model from {model_folder}")
-
-  if opts.model != "":
-    model = load_model(ctx, opts.model)
-  else:
     let optim = model.optimizer(SGD, learning_rate = 0.01'f32)
 
     t0 = cpuTime()
@@ -255,54 +268,74 @@ proc main*() =
     # save the model if requested
     if opts.save_model:
       let model_file = &"{opts.output_prefix}model.h5df"
-      save_model(model)
+      save_model(model, nHidden, nOut, train_data.label_order)
       log("INFO", fmt"Model saved to {model_file}")
 
-  ctx.no_grad_mode:
-    let t_probs = model.forward(X).value.softmax #.argmax(axis=1).squeeze
+    ctx.no_grad_mode:
+      t_probs = model.forward(X).value.softmax #.argmax(axis=1).squeeze
 
-  let
+  else:
+    proc load_model(ctx: Context[Tensor[float32]], model_folder: string): PredictionNet[float32] =
+      for f in @["/fc1.weight.npy", "/fc1.bias.npy", "/classifier.weight.npy", "/classifier.bias.npy"]:
+        if not fileExists(model_folder & f):
+          log("ERROR", &"Unable to load model data: file {model_folder & f} does not exist")
+          quit QuitFailure
+      result.fc1.weight = ctx.variable(read_npy[float32](&"{model_folder}/fc1.weight.npy"), requires_grad = true)
+      result.fc1.bias   = ctx.variable(read_npy[float32](&"{model_folder}/fc1.bias.npy"), requires_grad = true)
+      result.classifier.weight = ctx.variable(read_npy[float32](&"{model_folder}/classifier.weight.npy"), requires_grad = true)
+      result.classifier.bias   = ctx.variable(read_npy[float32](&"{model_folder}/classifier.bias.npy"), requires_grad = true)
+      log("INFO", &"loaded model from {model_folder}")
+
+    var model = load_model(ctx, opts.model)
     q_probs = model.forward(ctx.variable q_proj).value.softmax
-    q_pred = q_probs.argmax(axis=1).squeeze
-    t_pred = t_probs.argmax(axis=1).squeeze
-
+  
+  
   var header = @["#sample_id", "predicted_label", "given_label"]
-  #var inv_orders = newSeq[string](unique_labels.len)
-  # maintain order of ancestries
-  #header.setLen(header.len + unique_labels.len)
-  var inv_orders = newSeq[string](train_data.label_order.len)
-  # maintain order of ancestries
-  header.setLen(header.len + train_data.label_order.len)
-  for k, v in train_data.label_order:
+  # Load ordered labels from the JSON
+  var labels: Table[string, int]
+  if perform_training:
+    labels = train_data.label_order
+  else:
+    var i = 0
+    for l in model_json["labels"].items:
+      labels[l.getStr] = i
+      i += 1
+  
+  # maintain order of labels
+  var inv_orders = newSeq[string](labels.len)
+  header.setLen(header.len + labels.len)
+  for k, v in labels:
     inv_orders[v] = k
     header[3 + v] = k & "_prob"
   for ip in 0..<nPCs:
     header.add("PC" & $(ip + 1))
 
-  train_preds_fh.write_line(join(header, "\t"))
-
   var lhtmls = initTable[string, ForHtml]()
   var qhtmls = initTable[string, ForHtml]()
 
-  for i, s in train_data.sids:
-    # The order here is sampleID, predicted_label, given_label
-    var line = @[s, inv_orders[t_pred[i]], train_data.labels[i]]
-    for j in 0..<train_data.label_order.len:
-      line.add(formatFloat(t_probs[i, j], ffDecimal, precision=4))
+  if perform_training:
+    train_preds_fh.write_line(join(header, "\t"))
+    let t_pred = t_probs.argmax(axis=1).squeeze
+    for i, s in train_data.sids:
+      # The order here is sampleID, predicted_label, given_label
+      var line = @[s, inv_orders[t_pred[i]], train_data.labels[i]]
+      for j in 0..<train_data.label_order.len:
+        line.add(formatFloat(t_probs[i, j], ffDecimal, precision=4))
 
-    if make_html:
-      var lhtml = lhtmls.mgetOrPut(train_data.labels[i], ForHtml(group_label: train_data.labels[i], nDims: nDims, dims: newSeq[seq[float32]](nDims)))
-      lhtml.text.add(&"sample:{s} label-probability: {t_probs[i, _].max}")
-      for j in 0..<nDims: lhtml.dims[j].add(t_proj[i, j])
+      if make_html:
+        var lhtml = lhtmls.mgetOrPut(train_data.labels[i], ForHtml(group_label: train_data.labels[i], nDims: nDims, dims: newSeq[seq[float32]](nDims)))
+        lhtml.text.add(&"sample:{s} label-probability: {t_probs[i, _].max}")
+        for j in 0..<nDims: lhtml.dims[j].add(t_proj[i, j])
 
-    for j in 0..<nPcs:
-      line.add(formatFloat(t_proj[i, j], ffDecimal, precision=4))
+      for j in 0..<nPcs:
+        line.add(formatFloat(t_proj[i, j], ffDecimal, precision=4))
 
-    train_preds_fh.write_line(join(line, "\t"))
+      train_preds_fh.write_line(join(line, "\t"))
 
-  train_preds_fh.close
-  log("INFO", &"wrote train predictions to {train_preds_filename}")
+    train_preds_fh.close
+    log("INFO", &"wrote train predictions to {train_preds_filename}")
 
+  let q_pred = q_probs.argmax(axis=1).squeeze
   for i, s in query_data.sids:
     let group_label = inv_orders[q_pred[i]]
     var line = @[s, inv_orders[q_pred[i]], ""]

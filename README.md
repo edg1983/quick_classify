@@ -7,7 +7,7 @@ In case of genetic data, you will need to perform PC dimensionality reduction be
 ## Usage
 
 ```bash
-QUICK CLASSIFY VERSION 0.1
+QUICK CLASSIFY VERSION 0.2
 make a quick classifier and classify examples
 
 Usage:
@@ -20,6 +20,8 @@ Options:
   -t, --train=TRAIN          separate tsv file containing training set
   -q, --query=QUERY          input file containing new data to predict
   --make_html                generate HTML report of predictions results. Not suggested with N dimensions is > 20
+  --save_model               save the trained model and eventually PC loadings for future use
+  --model=MODEL              load a previously optimized model from this file (default: )
   --n_pcs=N_PCS              number of principal components to use in the reduced dataset (default: 0)
   --nn_epochs=NN_EPOCHS      number of epochs for model training (default: 10000)
   --nn_hidden_size=NN_HIDDEN_SIZE
@@ -33,6 +35,8 @@ Options:
 ## Input files
 
 At the moment the tool only accept tab-separated files as input for train and query dataset. The first 2 column must contain sample id and labels and must be named `sample` and `label`. The label column is empty for the query dataset. All other columns are used as features, there is no option to subset columns at the moment.
+
+At the moment, pre-processing of input is limited. Thus, **test and train data must contain the same features (columns) in the same order**.
 
 When `--n_pcs` is set to zero (default) the tool will use the input data directly (all columns strating from the 3rd), otherwise it will first perform PC dimensionality reduction generating N PCs and use these for model training and prediction.
 
@@ -51,3 +55,4 @@ When `--make_html` is set the tool also generates a HTML report `<output_prefix>
 
 - [ ] be able to save trained models and use them to predict new data without retraining the model.
 - [ ] allow to subset columns in input files using column names or index
+- [ ] when both train and test are given automatically subset to common columns
